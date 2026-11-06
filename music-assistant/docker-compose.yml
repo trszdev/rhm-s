@@ -1,0 +1,44 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - tailscale-config:/var/sync
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-music-assistant}
+      - TS_USERSPACE=${TS_USERSPACE:-false}
+
+  music-assistant:
+    image: ghcr.io/music-assistant/server:latest
+    container_name: music-assistant
+    restart: unless-stopped
+    ports:
+      - "8095:8095"
+      - "8096:8096/udp"
+    volumes:
+      - ma-config:/config
+      - ma-media:/media
+    depends_on:
+      tailscale:
+        condition: service_started
+
+  ytmusic-free-provider:
+    image: sproft/ytmusic-free-provider:latest
+    container_name: ytmusic-free-provider
+    restart: unless-stopped
+    environment:
+      - MA_URL=http://music-assistant:8095
+    depends_on:
+      - music-assistant
+
+volumes:
+  tailscale-config:
+  ma-config:
+  ma-media:
