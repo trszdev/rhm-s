@@ -1,9 +1,10 @@
 # Music Assistant за Tailscale: HTTPS на MagicDNS-имени с сертификатом Tailscale.
 #
-# Схема:
+# Схема (как в setup/docker/docker-compose.yml):
 #   - контейнер tailscale — отдельный узел tailnet (имя TS_HOSTNAME, по умолчанию music-assistant);
-#   - music-assistant использует сеть контейнера tailscale (network_mode: service:tailscale),
-#     поэтому его порт 8095 виден только внутри этой сети и наружу напрямую не торчит;
+#     работает в userspace-режиме (TS_USERSPACE=true), поэтому трафик из tailnet
+#     не попадает в сетевой стек контейнера напрямую: порты MA в tailnet не видны;
+#   - music-assistant использует сеть контейнера tailscale (network_mode: service:tailscale);
 #   - tailscale serve из config/serve.json проксирует https://<имя>.<tailnet>.ts.net:443
 #     на http://127.0.0.1:8095 и сам выдаёт и продлевает сертификат.
 #
@@ -16,11 +17,6 @@ services:
     image: tailscale/tailscale:latest
     container_name: tailscale
     restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - SYS_ADMIN
-    devices:
-      - /dev/net/tun
     volumes:
       - tailscale-config:/var/lib/tailscale
       # Файл serve-конфигурации; каталог ./config монтируется целиком
@@ -30,10 +26,9 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_HOSTNAME=${TS_HOSTNAME:-music-assistant}
       - TS_STATE_DIR=/var/lib/tailscale
-      - TS_ACCEPT_DNS=true
+      - TS_USERSPACE=true
       - TS_SERVE_CONFIG=/config/serve.json
-    # Порты публикуются на контейнере tailscale, потому что music-assistant делит с ним сеть.
-    # 8097/TCP — поток для плееров в локальной сети. 8095 (веб-интерфейс) наружу не публикуем:
+    # 8097/TCP — поток для плееров в локальной сети. Веб-интерфейс 8095 не публикуем:
     # он доступен только через https://<имя>.<tailnet>.ts.net
     ports:
       - "8097:8097"
