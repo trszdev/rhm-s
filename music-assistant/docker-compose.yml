@@ -15,9 +15,7 @@ services:
       - TS_HOSTNAME=${TS_HOSTNAME:-music-assistant}
       - TS_ACCEPT_DNS=true
       - TS_SERVICES={"tcp":{"443":[{"port":8095,"tls":true}]}}
-    command:
-      - tailscale
-      - start
+
 
   music-assistant:
     image: ghcr.io/sproft/ytmusic-free-provider:latest
