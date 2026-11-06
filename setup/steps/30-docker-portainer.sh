@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Шаг 3. Docker Engine (из официального репозитория Docker) + Portainer CE.
+# Шаг 3. Docker Engine (из официального репозитория Docker) + Portainer за Tailscale HTTPS.
+#
+# Portainer запускается стеком setup/docker/docker-compose.yml:
+#   - контейнер ts — отдельный узел tailnet с именем PORTAINER_TS_HOSTNAME;
+#   - контейнер portainer живёт в сети ts и не публикует порты;
+#   - tailscale serve отдаёт https://<имя>.<tailnet>.ts.net с сертификатом Tailscale.
 #
 # Переменные окружения:
-#   PORTAINER_BIND   IP, на котором слушает Portainer (по умолчанию — tailnet IP этой машины,
-#                    иначе 127.0.0.1). 0.0.0.0 задавай только осознанно: Docker публикует
-#                    порты в обход ufw.
-#   PORTAINER_IMAGE  образ Portainer (по умолчанию portainer/portainer-ce:lts)
+#   TS_AUTHKEY             auth key для контейнера ts. Нужен, если setup/docker/.env ещё нет.
+#                          Одноразовый ключ уже мог быть использован шагом tailscale,
+#                          поэтому для контейнера лучше reusable-ключ или отдельный ключ.
+#   PORTAINER_TS_HOSTNAME  имя Portainer в tailnet (по умолчанию portainer).
+#                          Не используй то же имя, что у хоста: это два разных узла.
 
 # shellcheck source=../lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -13,7 +19,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 require_root
 require_debian_like
 
-PORTAINER_IMAGE="${PORTAINER_IMAGE:-portainer/portainer-ce:lts}"
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker" && pwd)"
+ENV_FILE="$STACK_DIR/.env"
+PORTAINER_TS_HOSTNAME="${PORTAINER_TS_HOSTNAME:-portainer}"
+
+compose() { docker compose -f "$STACK_DIR/docker-compose.yml" "$@"; }
 
 # 1. Удаляем пакеты из дистрибутива, которые конфликтуют с docker-ce
 CONFLICTS=(docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc)
@@ -54,45 +64,61 @@ if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
   warn "Пользователь $SUDO_USER добавлен в группу docker. Это почти то же, что root. Переподключись, чтобы группа применилась."
 fi
 
-# 3. Portainer CE
-TS_IP="$(tailscale_ip4)"
-if [[ -n "${PORTAINER_BIND:-}" ]]; then
-  BIND="$PORTAINER_BIND"
-elif [[ -n "$TS_IP" ]]; then
-  BIND="$TS_IP"
+# 3. Файл .env для стека (секрет, права 600)
+if [[ -f "$ENV_FILE" ]]; then
+  if grep -q 'REPLACE_ME' "$ENV_FILE"; then
+    die "В $ENV_FILE остался плейсхолдер REPLACE_ME. Впиши настоящий TS_AUTHKEY или удали файл и задай TS_AUTHKEY в окружении."
+  fi
+  log "Использую существующий $ENV_FILE"
 else
-  BIND="127.0.0.1"
-  warn "Tailscale не подключён: Portainer слушает только 127.0.0.1. Задай PORTAINER_BIND, чтобы открыть доступ."
+  [[ -n "${TS_AUTHKEY:-}" ]] || die "Нет $ENV_FILE и не задан TS_AUTHKEY. Задай TS_AUTHKEY или создай .env из .env.example."
+  log "Создаю $ENV_FILE (права 600)"
+  (
+    umask 077
+    cat > "$ENV_FILE" <<EOF
+# Создано setup/steps/30-docker-portainer.sh. Не коммить.
+TS_AUTHKEY=${TS_AUTHKEY}
+TS_HOSTNAME=${PORTAINER_TS_HOSTNAME}
+EOF
+  )
 fi
+chmod 600 "$ENV_FILE"
 
-log "Запускаю Portainer (${PORTAINER_IMAGE}) на ${BIND}:9443"
-docker volume inspect portainer_data >/dev/null 2>&1 || docker volume create portainer_data >/dev/null
+# 4. Старый контейнер portainer из прошлой версии скрипта (не из compose) мешает стеку
 if docker container inspect portainer >/dev/null 2>&1; then
-  log "Контейнер portainer уже есть, пересоздаю (данные лежат в volume portainer_data)"
+  warn "Найден контейнер portainer из прошлой версии. Удаляю его. Его volume portainer_data сохраняется, но новый стек использует свой volume selfhost_portainer_data и начинается с чистого листа."
   docker rm -f portainer >/dev/null
 fi
-docker pull -q "$PORTAINER_IMAGE" >/dev/null
-docker run -d \
-  --name portainer \
-  --restart=always \
-  -p "${BIND}:9443:9443" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v portainer_data:/data \
-  "$PORTAINER_IMAGE" >/dev/null
 
-CHECK_HOST="$BIND"
-[[ "$BIND" == "0.0.0.0" ]] && CHECK_HOST="127.0.0.1"
+# 5. Запуск стека
+log "Запускаю стек Portainer (docker compose)"
+compose pull --quiet
+compose up -d
 
-log "Жду готовности Portainer"
+log "Жду, пока контейнер ts подключится к tailnet"
 ready=0
-for _ in $(seq 1 30); do
-  if curl -ksf --max-time 3 "https://${CHECK_HOST}:9443/api/system/status" >/dev/null 2>&1; then
+for _ in $(seq 1 45); do
+  if [[ -n "$(compose exec -T ts tailscale ip -4 2>/dev/null || true)" ]]; then
     ready=1
     break
   fi
   sleep 2
 done
-(( ready == 1 )) || die "Portainer не ответил за 60 секунд. Смотри: docker logs portainer"
+(( ready == 1 )) || die "Контейнер ts не подключился к tailnet за 90 секунд. Смотри: docker compose -f $STACK_DIR/docker-compose.yml logs ts"
 
-ok "Portainer доступен: https://${CHECK_HOST}:9443 (сертификат самоподписанный)"
-warn "Открой Portainer и СРАЗУ создай admin-пользователя. Если не успеть примерно за 5 минут, Portainer закроет форму. Тогда выполни: docker restart portainer"
+# 6. Проверка serve и вывод адреса
+SERVE_STATUS="$(compose exec -T ts tailscale serve status 2>/dev/null || true)"
+if grep -q '127.0.0.1:9443' <<<"$SERVE_STATUS"; then
+  ok "tailscale serve проксирует на Portainer"
+else
+  warn "serve не настроен (плейсхолдер \${TS_CERT_DOMAIN} не сработал?). Выполни вручную: docker compose -f $STACK_DIR/docker-compose.yml exec ts tailscale serve --bg --https=443 https+insecure://127.0.0.1:9443"
+fi
+
+DNS_NAME="$(compose exec -T ts tailscale status --json 2>/dev/null \
+  | grep -o '"DNSName": *"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
+if [[ -n "$DNS_NAME" ]]; then
+  ok "Portainer: https://${DNS_NAME%.}"
+  warn "Открой адрес и сразу создай admin-пользователя при первом входе."
+else
+  warn "Не удалось прочитать DNS-имя. Проверь: docker compose -f $STACK_DIR/docker-compose.yml exec ts tailscale status"
+fi

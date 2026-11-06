@@ -1,0 +1,45 @@
+# Portainer за Tailscale: HTTPS на MagicDNS-имени с настоящим сертификатом.
+#
+# Схема:
+#   - контейнер ts — отдельный узел tailnet (своё имя, по умолчанию "portainer");
+#   - portainer использует сеть контейнера ts (network_mode: service:ts),
+#     поэтому его порт 9443 виден только внутри этой сети;
+#   - tailscale serve из config/serve.json проксирует https://<имя>.<tailnet>.ts.net
+#     на https://127.0.0.1:9443 и сам выдаёт и продлевает сертификат.
+#
+# Запуск: cp .env.example .env, заполнить, затем docker compose up -d
+
+name: selfhost
+
+services:
+  ts:
+    # Для продакшена лучше закрепить версию, например tailscale/tailscale:v1.xx.x
+    image: tailscale/tailscale:latest
+    environment:
+      # Ключ из админки Tailscale (Settings → Keys). Нужен при первом запуске;
+      # дальше идентичность хранится в ts-state.
+      - TS_AUTHKEY=${TS_AUTHKEY:?Задай TS_AUTHKEY в .env}
+      - TS_HOSTNAME=${TS_HOSTNAME:-portainer}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+      # Файл serve-конфигурации; каталог ./config монтируется целиком
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./config:/config:ro
+    restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce:lts
+    # Общая сеть с ts: порты публиковать не нужно, наружу торчит только tailscale serve
+    network_mode: service:ts
+    depends_on:
+      - ts
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
+
+volumes:
+  ts-state:
+  portainer_data:
