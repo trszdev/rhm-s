@@ -42,9 +42,12 @@ services:
       - tailscale
     volumes:
       - ma-config:/config
+      # /data — данные MA, в том числе учётка администратора
+      - ma-data:/data
       - ma-media:/media
 
 volumes:
   tailscale-config:
   ma-config:
+  ma-data:
   ma-media:
