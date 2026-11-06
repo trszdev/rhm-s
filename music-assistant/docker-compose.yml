@@ -16,7 +16,7 @@ services:
       - TS_USERSPACE=${TS_USERSPACE:-false}
 
   music-assistant:
-    image: ghcr.io/music-assistant/server:latest
+    image: ghcr.io/sproft/ytmusic-free-provider:latest
     container_name: music-assistant
     restart: unless-stopped
     ports:
@@ -28,15 +28,6 @@ services:
     depends_on:
       tailscale:
         condition: service_started
-
-  ytmusic-free-provider:
-    image: sproft/ytmusic-free-provider:latest
-    container_name: ytmusic-free-provider
-    restart: unless-stopped
-    environment:
-      - MA_URL=http://music-assistant:8095
-    depends_on:
-      - music-assistant
 
 volumes:
   tailscale-config:
