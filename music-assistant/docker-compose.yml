@@ -39,6 +39,9 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=true
       - TS_SERVE_CONFIG=/config/serve.json
+      # Tailscale эту переменную не читает. Compose не пересоздаёт контейнер при смене
+      # inline-конфига, поэтому при смене адреса в ts-serve её тоже нужно менять.
+      - TS_SERVE_TARGET=music-play:5080
     configs:
       - source: ts-serve
         target: /config/serve.json
