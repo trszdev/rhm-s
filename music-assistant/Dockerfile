@@ -21,17 +21,17 @@ RUN apk add --no-cache ffmpeg ca-certificates python3 nodejs \
  && wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
  && chmod +x /usr/local/bin/yt-dlp \
  && echo '--js-runtimes node' > /etc/yt-dlp.conf \
- && mkdir -p /data /music
+ && mkdir -p /data /music \
+ && printf '%s\n' \
+      'music_dirs = ["/music"]' \
+      'bind_addr = "0.0.0.0:4533"' \
+      'db_path = "/data/rustream.db"' \
+      'ytm_enabled = true' \
+      'ytdlp_path = "yt-dlp"' \
+      'ytm_cache_dir = "/cache/ytm"' \
+      'ytm_cache_max_mb = 512' \
+      > /etc/rustream.toml
 # Конфиг лежит в образе: compose не разрешает inline-конфиги в контейнере с read_only.
-COPY <<'EOF' /etc/rustream.toml
-music_dirs = ["/music"]
-bind_addr = "0.0.0.0:4533"
-db_path = "/data/rustream.db"
-ytm_enabled = true
-ytdlp_path = "yt-dlp"
-ytm_cache_dir = "/cache/ytm"
-ytm_cache_max_mb = 512
-EOF
 ENV RUSTREAM_CONFIG=/etc/rustream.toml
 COPY --from=builder /rustream /usr/local/bin/rustream
 WORKDIR /data

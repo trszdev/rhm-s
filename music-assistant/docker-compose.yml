@@ -50,7 +50,9 @@ services:
       args:
         # Страна поиска. В коде Rustream зашита RU, Dockerfile заменяет её при сборке.
         REGION: ${REGION:?Задай REGION в .env, например DE}
-    image: rustream-local:68de05a
+    # Образа нет в реестрах, поэтому pull пропускается, а при каждом деплое образ собирается.
+    # Неизменившиеся шаги берутся из кеша сборки.
+    pull_policy: build
     restart: unless-stopped
     environment:
       # Логин всегда admin. Пароль применяется только при первом запуске с пустой базой.
