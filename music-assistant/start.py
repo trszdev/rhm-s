@@ -151,9 +151,15 @@ def main():
         print(f"Не удалось обработать cookies.txt: {error}", file=sys.stderr, flush=True)
     port = os.environ.get("PORT", "5080")
     # Без access-лога: Amperfy передаёт логин и токен в строке запроса.
+    # Порт доступен только контейнеру tailscale, поэтому его заголовкам можно верить:
+    # так сервер видит HTTPS и ставит на куки входа флаг Secure.
     os.execvp(
         "python",
-        ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", port, "--no-access-log"],
+        [
+            "python", "-m", "uvicorn", "app.main:app",
+            "--host", "0.0.0.0", "--port", port,
+            "--no-access-log", "--proxy-headers", "--forwarded-allow-ips", "*",
+        ],
     )
 
 

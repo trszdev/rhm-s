@@ -20,6 +20,46 @@ replace_once(
     "(None if auth_store.password_required() else auth_store.username())",
 )
 
+# Экран входа. В оригинале он удалён: интерфейс работал только за счёт этой уязвимости.
+LOGIN_PAGE = '''<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Music Play</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:16px;
+background:#14171d;color:#e8eaee;font:16px/1.4 system-ui,-apple-system,sans-serif}
+form{width:100%;max-width:320px;display:grid;gap:12px}
+h1{margin:0 0 4px;font-size:22px}
+input,button{width:100%;padding:12px;border-radius:10px;font:inherit;border:1px solid #39404d}
+input{background:#1c212b;color:inherit}
+button{background:#e8eaee;color:#14171d;border-color:#e8eaee;font-weight:600}
+p{margin:0;color:#ff8a80}
+</style></head><body>
+<form method="post" action="/api/login">
+<h1>Music Play</h1>
+<p id="error" hidden>Неверный пароль</p>
+<input type="password" name="password" placeholder="Пароль" aria-label="Пароль"
+ autocomplete="current-password" autofocus required>
+<button type="submit">Войти</button>
+</form>
+<script>
+if (new URLSearchParams(location.search).get("login") === "fail")
+  document.getElementById("error").hidden = false;
+</script>
+</body></html>'''
+replace_once(
+    "app/main.py",
+    '@app.get("/", response_class=HTMLResponse)\n'
+    "async def index(request: Request):\n"
+    "    return templates.TemplateResponse(\n",
+    f"LOGIN_PAGE = {LOGIN_PAGE!r}\n\n\n"
+    '@app.get("/", response_class=HTMLResponse)\n'
+    "async def index(request: Request):\n"
+    "    if not request.state.session_user:\n"
+    '        return HTMLResponse(LOGIN_PAGE, headers={"Cache-Control": "no-store"})\n'
+    "    return templates.TemplateResponse(\n",
+)
+
 # 1а. Общий поиск YouTube не возвращает у песен длительность и альбом, из-за чего size=0, и
 #     Amperfy их скрывает. Песни берём из поиска с фильтром, остальное оставляем как есть.
 replace_once(
@@ -27,7 +67,11 @@ replace_once(
     '    if not grouped["playlists"] and not grouped["community_playlists"]:\n',
     '    scoped_songs = search(query, "songs", max(song_limit, 20))\n'
     "    if scoped_songs:\n"
-    '        grouped["songs"] = scoped_songs\n\n'
+    "        # Один трек не должен попасть в базу дважды: это нарушает UNIQUE и отменяет запись.\n"
+    "        song_ids: set[str] = set()\n"
+    '        grouped["songs"] = []\n'
+    '        _extend_unique(grouped["songs"], scoped_songs, song_ids)\n'
+    '        grouped["videos"] = [item for item in grouped["videos"] if item.get("id") not in song_ids]\n\n'
     '    if not grouped["playlists"] and not grouped["community_playlists"]:\n',
 )
 replace_once(
