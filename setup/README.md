@@ -56,8 +56,10 @@ sudo ./install.sh tailscale docker
 Шаг `docker` ставит Docker и запускает стек [docker/docker-compose.yml](docker/docker-compose.yml):
 
 - `ts` — отдельный узел tailnet с именем `PORTAINER_TS_HOSTNAME` (по умолчанию `portainer`). Ключ берётся из `TS_AUTHKEY`.
-- `portainer` — живёт в сети `ts` (`network_mode: service:ts`), порты наружу не публикует.
-- `tailscale serve` по [config/serve.json](docker/config/serve.json) проксирует `https://portainer.<tailnet>.ts.net` на `https+insecure://127.0.0.1:9443`. Сертификат выдаёт Tailscale и продлевает сам. Браузер не покажет предупреждение.
+- `portainer` — находится с `ts` в общей внутренней сети `backend`, порты не публикует.
+- `tailscale serve` по [config/serve.json](docker/config/serve.json) проксирует `https://portainer.<tailnet>.ts.net` на `https+insecure://portainer:9443`. Сертификат выдаёт Tailscale и продлевает сам. Браузер не покажет предупреждение.
+
+Общий `network_mode: service:ts` здесь использовать нельзя: в userspace-режиме tailscaled перенаправляет входящие порты узла на свой `127.0.0.1`, и порты Portainer стали бы доступны в tailnet в обход `serve`.
 
 Шаг создаёт `setup/docker/.env` (права 600) из `TS_AUTHKEY`. Если `.env` уже есть, шаг его не трогает. Файл `.env` не коммить, он в `.gitignore`.
 
@@ -78,11 +80,9 @@ docker compose exec ts tailscale serve status
 curl -sI https://portainer.<tailnet>.ts.net | head -1
 ```
 
-Если serve не поднялся, посмотри `docker compose logs ts`. Плейсхолдер `${TS_CERT_DOMAIN}` в `serve.json` подставляется контейнером, но в официальной справке по параметрам я этого не нашёл, поэтому шаг проверяет результат и при сбое печатает команду для ручного запуска:
+Если serve не поднялся, посмотри `docker compose logs ts`. Строка `not able to issue TLS certs` значит, что в tailnet выключены HTTPS Certificates.
 
-```bash
-docker compose exec ts tailscale serve --bg --https=443 https+insecure://127.0.0.1:9443
-```
+Прямое обращение к узлу по портам не должно работать: с другого устройства в tailnet `curl -m 5 -k https://portainer.<tailnet>.ts.net:9443` должен завершиться ошибкой подключения.
 
 Старый контейнер `portainer` из прошлой версии скрипта шаг `docker` удаляет. Его volume `portainer_data` остаётся, но новый стек использует свой volume `selfhost_portainer_data`. Данные старого Portainer не переносятся, при первом входе создаётся новый admin.
 

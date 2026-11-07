@@ -3,7 +3,7 @@
 #
 # Portainer запускается стеком setup/docker/docker-compose.yml:
 #   - контейнер ts — отдельный узел tailnet с именем PORTAINER_TS_HOSTNAME;
-#   - контейнер portainer живёт в сети ts и не публикует порты;
+#   - контейнер portainer находится во внутренней сети стека и не публикует порты;
 #   - tailscale serve отдаёт https://<имя>.<tailnet>.ts.net с сертификатом Tailscale.
 #
 # Переменные окружения:
@@ -108,10 +108,10 @@ done
 
 # 6. Проверка serve и вывод адреса
 SERVE_STATUS="$(compose exec -T ts tailscale serve status 2>/dev/null || true)"
-if grep -q '127.0.0.1:9443' <<<"$SERVE_STATUS"; then
+if grep -q 'portainer:9443' <<<"$SERVE_STATUS"; then
   ok "tailscale serve проксирует на Portainer"
 else
-  warn "serve не настроен (плейсхолдер \${TS_CERT_DOMAIN} не сработал?). Выполни вручную: docker compose -f $STACK_DIR/docker-compose.yml exec ts tailscale serve --bg --https=443 https+insecure://127.0.0.1:9443"
+  warn "serve не настроен. Проверь, что в tailnet включены MagicDNS и HTTPS Certificates, затем смотри: docker compose -f $STACK_DIR/docker-compose.yml logs ts"
 fi
 
 DNS_NAME="$(compose exec -T ts tailscale status --json 2>/dev/null \

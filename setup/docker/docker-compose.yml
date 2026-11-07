@@ -2,10 +2,13 @@
 #
 # Схема:
 #   - контейнер ts — отдельный узел tailnet (своё имя, по умолчанию "portainer");
-#   - portainer использует сеть контейнера ts (network_mode: service:ts),
-#     поэтому его порт 9443 виден только внутри этой сети;
+#   - portainer и ts находятся в общей внутренней сети, порты на хост не публикуются;
 #   - tailscale serve из config/serve.json проксирует https://<имя>.<tailnet>.ts.net
-#     на https://127.0.0.1:9443 и сам выдаёт и продлевает сертификат.
+#     на https://portainer:9443 и сам выдаёт и продлевает сертификат.
+#
+# Не используй здесь network_mode: service:ts. В userspace-режиме tailscaled перенаправляет
+# входящие порты узла на свой 127.0.0.1, и при общем сетевом пространстве порты Portainer
+# (9443, 9000, 8000) стали бы доступны в tailnet в обход serve.
 #
 # Запуск: cp .env.example .env, заполнить, затем docker compose up -d
 
@@ -27,18 +30,22 @@ services:
     volumes:
       - ts-state:/var/lib/tailscale
       - ./config:/config:ro
+    networks:
+      - backend
     restart: unless-stopped
 
   portainer:
     image: portainer/portainer-ce:lts
-    # Общая сеть с ts: порты публиковать не нужно, наружу торчит только tailscale serve
-    network_mode: service:ts
-    depends_on:
-      - ts
+    # Порты не публикуем: снаружи доступен только tailscale serve на 443
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
+    networks:
+      - backend
     restart: unless-stopped
+
+networks:
+  backend:
 
 volumes:
   ts-state:
