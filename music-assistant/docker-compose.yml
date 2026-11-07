@@ -1,53 +1,101 @@
-# Music Assistant за Tailscale: HTTPS на MagicDNS-имени с сертификатом Tailscale.
+# Бэкенд для Amperfy: Rustream (Subsonic API и YouTube Music по куки), доступ по HTTPS через Tailscale.
 #
-# Схема (как в setup/docker/docker-compose.yml):
-#   - контейнер tailscale — отдельный узел tailnet (имя TS_HOSTNAME, по умолчанию music-assistant);
-#     работает в userspace-режиме (TS_USERSPACE=true), поэтому трафик из tailnet
-#     не попадает в сетевой стек контейнера напрямую: порты MA в tailnet не видны;
-#   - music-assistant использует сеть контейнера tailscale (network_mode: service:tailscale);
-#   - tailscale serve из config/serve.json проксирует https://<имя>.<tailnet>.ts.net:443
-#     на http://127.0.0.1:8095 и сам выдаёт и продлевает сертификат.
+# Схема:
+#   - tailscale — отдельный узел tailnet (имя TS_HOSTNAME). tailscale serve принимает
+#     https://<имя>.<tailnet>.ts.net:443 и проксирует на http://rustream:4533.
+#     Сертификат выдаёт и продлевает Tailscale;
+#   - rustream — Subsonic-сервер с веб-интерфейсом. Образ собирается из ./Dockerfile;
+#   - у контейнеров общая внутренняя сеть, но НЕ общий network_mode. В userspace-режиме
+#     tailscaled перенаправляет входящие порты узла на свой 127.0.0.1, поэтому при общем
+#     сетевом пространстве порт 4533 был бы открыт в tailnet без TLS. Порты на хост
+#     тоже не публикуются.
 #
-# Требования в админке Tailscale: MagicDNS и HTTPS certificates включены (DNS).
+# Куки вставляются в веб-интерфейсе: Профиль → YouTube Music. Rustream хранит их
+# зашифрованными в базе, но ключ лежит в той же базе (том rustream-data).
 #
-# Запуск: заполнить .env (TS_AUTHKEY, TS_HOSTNAME), затем docker compose up -d
+# Кеш: аудио лежит только в tmpfs (память) и занимает не больше 512 МБ, старые треки
+# вытесняются новыми, при перезапуске контейнера кеш очищается целиком.
+#
+# В админке Tailscale должны быть включены MagicDNS и HTTPS Certificates.
+#
+# Запуск: заполнить .env, затем docker compose up -d --build
+#
+# Когда YouTube ломает извлечение потоков, пересобери образ со свежим yt-dlp:
+#   docker compose build --no-cache rustream && docker compose up -d
 
 services:
   tailscale:
     image: tailscale/tailscale:latest
-    container_name: tailscale
     restart: unless-stopped
-    volumes:
-      - tailscale-config:/var/lib/tailscale
-      # Файл serve-конфигурации; каталог ./config монтируется целиком
-      - ./config:/config:ro
+    security_opt:
+      - no-new-privileges:true
     environment:
-      # Auth key нужен при первом запуске; дальше идентичность хранится в tailscale-config
+      # Auth key нужен при первом входе; дальше идентичность хранится в tailscale-config
       - TS_AUTHKEY=${TS_AUTHKEY:-}
-      - TS_HOSTNAME=${TS_HOSTNAME:-music-assistant}
+      - TS_HOSTNAME=${TS_HOSTNAME:-music}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=true
       - TS_SERVE_CONFIG=/config/serve.json
-    # 8097/TCP — поток для плееров в локальной сети. Веб-интерфейс 8095 не публикуем:
-    # он доступен только через https://<имя>.<tailnet>.ts.net
-    ports:
-      - "8097:8097"
-
-  music-assistant:
-    image: ghcr.io/sproft/ytmusic-free-provider:latest
-    container_name: music-assistant
-    restart: unless-stopped
-    network_mode: service:tailscale
-    depends_on:
-      - tailscale
+    configs:
+      - source: ts-serve
+        target: /config/serve.json
     volumes:
-      - ma-config:/config
-      # /data — данные MA, в том числе учётка администратора
-      - ma-data:/data
-      - ma-media:/media
+      - tailscale-config:/var/lib/tailscale
+    networks:
+      - backend
+
+  rustream:
+    build:
+      context: .
+      args:
+        # Страна поиска. В коде Rustream зашита RU, Dockerfile заменяет её при сборке.
+        REGION: ${REGION:?Задай REGION в .env, например DE}
+    image: rustream-local:68de05a
+    restart: unless-stopped
+    environment:
+      # Логин всегда admin. Пароль применяется только при первом запуске с пустой базой.
+      - RUSTREAM_ADMIN_PASSWORD=${SUBSONIC_PASSWORD:?Задай SUBSONIC_PASSWORD в .env}
+      - RUST_LOG=rustream=info
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /cache:size=768m
+      - /tmp:size=64m
+    # Лимит учитывает и кеш в tmpfs
+    mem_limit: 1536m
+    volumes:
+      # База: пользователи, плейлисты, избранное, зашифрованные куки YouTube
+      - rustream-data:/data
+    networks:
+      - backend
+
+configs:
+  ts-serve:
+    # $$ — экранирование для compose. ${TS_CERT_DOMAIN} подставляет сам контейнер tailscale.
+    content: |
+      {
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          }
+        },
+        "Web": {
+          "$${TS_CERT_DOMAIN}:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://rustream:4533"
+              }
+            }
+          }
+        }
+      }
+
+networks:
+  backend:
 
 volumes:
   tailscale-config:
-  ma-config:
-  ma-data:
-  ma-media:
+  rustream-data:
