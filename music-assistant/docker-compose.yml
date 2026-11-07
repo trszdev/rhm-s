@@ -15,7 +15,7 @@
 # Куки задаются переменной YTM_COOKIES в настройках стека, в git их не добавлять.
 # При каждом запуске они записываются в том music-play-config. Формат: см. .env.example.
 #
-# Кеш: аудио лежит только в tmpfs (память) и занимает не больше 512 МБ, старые треки
+# Кеш: аудио лежит только в tmpfs (память) и занимает не больше 256 МБ, старые треки
 # вытесняются новыми, при перезапуске контейнера кеш очищается целиком.
 #
 # В админке Tailscale должны быть включены MagicDNS и HTTPS Certificates.
@@ -71,7 +71,7 @@ services:
       - YTDLP_COOKIE_FILE=/config/cookies.txt
       - STREAM_MODE=proxy
       - CACHE_ENABLED=true
-      - CACHE_MAX_GB=0.5
+      - CACHE_MAX_GB=0.25
       - TRANSCODE_TO_AAC=true
       # Внешние сервисы, которые для музыки из аккаунта не нужны
       - SPONSORBLOCK=false
@@ -87,7 +87,7 @@ services:
       # start.py читает cookies.txt, загруженный через docker cp с чужим владельцем и правами 600
       - DAC_READ_SEARCH
     tmpfs:
-      - /cache:size=768m
+      - /cache:size=384m
       - /tmp:size=256m
       - /logs:size=64m
     # yt-dlp запускает Deno. По данным проекта, при лимите ниже 512 МБ его убивает ядро.
