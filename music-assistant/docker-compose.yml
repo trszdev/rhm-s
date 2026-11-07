@@ -1,27 +1,30 @@
-# Бэкенд для Amperfy: Rustream (Subsonic API и YouTube Music по куки), доступ по HTTPS через Tailscale.
+# Бэкенд для Amperfy: Subsonic API поверх YouTube Music с входом в аккаунт по куки
+# (music-play), доступ по HTTPS через Tailscale.
 #
 # Схема:
 #   - tailscale — отдельный узел tailnet (имя TS_HOSTNAME). tailscale serve принимает
-#     https://<имя>.<tailnet>.ts.net:443 и проксирует на http://rustream:4533.
+#     https://<имя>.<tailnet>.ts.net:443 и проксирует на http://music-play:5080.
 #     Сертификат выдаёт и продлевает Tailscale;
-#   - rustream — Subsonic-сервер с веб-интерфейсом. Образ собирается из ./Dockerfile;
+#   - music-play — Subsonic-сервер. Плейлисты аккаунта читает через ytmusicapi,
+#     поток получает через yt-dlp. Образ собирается из ./Dockerfile;
 #   - у контейнеров общая внутренняя сеть, но НЕ общий network_mode. В userspace-режиме
 #     tailscaled перенаправляет входящие порты узла на свой 127.0.0.1, поэтому при общем
-#     сетевом пространстве порт 4533 был бы открыт в tailnet без TLS. Порты на хост
+#     сетевом пространстве порт 5080 был бы открыт в tailnet без TLS. Порты на хост
 #     тоже не публикуются.
 #
-# Куки вставляются в веб-интерфейсе: Профиль → YouTube Music. Rustream хранит их
-# зашифрованными в базе, но ключ лежит в той же базе (том rustream-data).
+# Куки задаются переменной YTM_COOKIES в настройках стека, в git их не добавлять.
+# При каждом запуске они записываются в том music-play-config. Формат: см. .env.example.
 #
 # Кеш: аудио лежит только в tmpfs (память) и занимает не больше 512 МБ, старые треки
 # вытесняются новыми, при перезапуске контейнера кеш очищается целиком.
 #
 # В админке Tailscale должны быть включены MagicDNS и HTTPS Certificates.
 #
-# Запуск: заполнить .env, затем docker compose up -d --build
+# Запуск через Portainer: переменные из .env.example задаются в настройках стека.
+# Запуск вручную: заполнить .env, затем docker compose up -d
 #
-# Когда YouTube ломает извлечение потоков, пересобери образ со свежим yt-dlp:
-#   docker compose build --no-cache rustream && docker compose up -d
+# Когда YouTube ломает извлечение потоков, нужен свежий yt-dlp. Он ставится при сборке
+# и остаётся в кеше, поэтому очисти кеш на сервере и задеплой заново: docker builder prune -f
 
 services:
   tailscale:
@@ -44,33 +47,51 @@ services:
     networks:
       - backend
 
-  rustream:
-    build:
-      context: .
-      args:
-        # Страна поиска. В коде Rustream зашита RU, Dockerfile заменяет её при сборке.
-        REGION: ${REGION:?Задай REGION в .env, например DE}
+  music-play:
+    build: .
     # Образа нет в реестрах, поэтому pull пропускается, а при каждом деплое образ собирается.
     # Неизменившиеся шаги берутся из кеша сборки.
     pull_policy: build
+    container_name: music-play
     restart: unless-stopped
     environment:
-      # Логин всегда admin. Пароль применяется только при первом запуске с пустой базой.
-      - RUSTREAM_ADMIN_PASSWORD=${SUBSONIC_PASSWORD:?Задай SUBSONIC_PASSWORD в .env}
-      - RUST_LOG=rustream=info
+      # Логин и пароль, которые вводятся в Amperfy. С аккаунтом Google не связаны.
+      - SUBSONIC_USER=${SUBSONIC_USER:-admin}
+      - SUBSONIC_PASSWORD=${SUBSONIC_PASSWORD:?Задай SUBSONIC_PASSWORD}
+      # Код страны, из которой сервер выходит в YouTube.
+      - YTM_LOCATION=${REGION:?Задай REGION, например DE}
+      # Только en: с ru ytmusicapi находит 0 песен и теряет альбомы
+      - YTM_LANGUAGE=en
+      # Куки аккаунта. start.py создаёт из них оба файла ниже
+      - YTM_COOKIES=${YTM_COOKIES:-}
+      - YTM_AUTH_FILE=/config/ytmusic_auth.json
+      - YTDLP_COOKIE_FILE=/config/cookies.txt
+      - STREAM_MODE=proxy
+      - CACHE_ENABLED=true
+      - CACHE_MAX_GB=0.5
+      - TRANSCODE_TO_AAC=true
+      # Внешние сервисы, которые для музыки из аккаунта не нужны
+      - SPONSORBLOCK=false
+      - RETURN_YOUTUBE_DISLIKE=false
+      - TRANSLATE_PROVIDER=none
+      - HOME=/tmp
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      # start.py читает cookies.txt, загруженный через docker cp с чужим владельцем и правами 600
+      - DAC_READ_SEARCH
     tmpfs:
       - /cache:size=768m
-      - /tmp:size=64m
-    # Лимит учитывает и кеш в tmpfs
-    mem_limit: 1536m
+      - /tmp:size=256m
+      - /logs:size=64m
+    # yt-dlp запускает Deno. По данным проекта, при лимите ниже 512 МБ его убивает ядро.
+    mem_limit: 2g
     volumes:
-      # База: пользователи, плейлисты, избранное, зашифрованные куки YouTube
-      - rustream-data:/data
+      # База библиотеки, пароль и куки YouTube
+      - music-play-config:/config
     networks:
       - backend
 
@@ -88,7 +109,7 @@ configs:
           "$${TS_CERT_DOMAIN}:443": {
             "Handlers": {
               "/": {
-                "Proxy": "http://rustream:4533"
+                "Proxy": "http://music-play:5080"
               }
             }
           }
@@ -100,4 +121,4 @@ networks:
 
 volumes:
   tailscale-config:
-  rustream-data:
+  music-play-config:
