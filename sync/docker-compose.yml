@@ -1,8 +1,11 @@
 # Seafile для локального запуска с периодическим бекапом на Яндекс.Диск.
 #
 # Схема:
-#   - seafile   — Seafile Server (образ seafileltd/seafile-mc). Веб-интерфейс только на
-#                 127.0.0.1:8080, наружу не публикуется;
+#   - tailscale — отдельный узел tailnet (имя TS_HOSTNAME). tailscale serve принимает
+#                 https://<имя>.<tailnet>.ts.net:443 и проксирует на http://seafile:80.
+#                 Сертификат выдаёт и продлевает Tailscale;
+#   - seafile   — Seafile Server (образ seafileltd/seafile-mc). Порты на хост не публикуются,
+#                 доступ только из tailnet;
 #   - db        — MariaDB для баз ccnet_db, seafile_db, seahub_db. Порт наружу не публикуется;
 #   - memcached — кеш для Seafile;
 #   - backup    — раз в BACKUP_INTERVAL_HOURS снимает дамп баз и синхронизирует файлы
@@ -11,12 +14,34 @@
 #
 # Данные лежат в именованных томах seafile-data и db-data, а не в папках проекта.
 #
+# В админке Tailscale должны быть включены MagicDNS и HTTPS Certificates.
+#
 # Запуск: cp .env.example .env, заполнить .env, затем docker compose up -d --build
 # Подробности и настройка квоты: см. README.md
 
 name: seafile
 
 services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Auth key нужен при первом входе; дальше идентичность хранится в tailscale-config
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-sync}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+      - TS_SERVE_CONFIG=/config/serve.json
+    configs:
+      - source: ts-serve
+        target: /config/serve.json
+    volumes:
+      - tailscale-config:/var/lib/tailscale
+    networks:
+      - seafile-net
+
   db:
     image: mariadb:10.11
     restart: unless-stopped
@@ -49,11 +74,11 @@ services:
       - TIME_ZONE=${TZ:-Etc/UTC}
       - SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL:?Задай SEAFILE_ADMIN_EMAIL в .env}
       - SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD:?Задай SEAFILE_ADMIN_PASSWORD в .env}
-      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_SERVER_HOSTNAME:-localhost:8080}
+      # Публичный адрес в tailnet: <TS_HOSTNAME>.<tailnet>.ts.net. Seafile использует его в ссылках.
+      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_SERVER_HOSTNAME:?Задай SEAFILE_SERVER_HOSTNAME в .env}
       - SEAFILE_SERVER_LETSENCRYPT=false
-      - FORCE_HTTPS_IN_CONF=false
-    ports:
-      - "127.0.0.1:8080:80"
+      # Снаружи пользователь заходит по https, Tailscale терминирует TLS
+      - FORCE_HTTPS_IN_CONF=true
     volumes:
       - seafile-data:/shared
     networks:
@@ -92,9 +117,31 @@ services:
     networks:
       - seafile-net
 
+configs:
+  ts-serve:
+    # $$ — экранирование для compose. ${TS_CERT_DOMAIN} подставляет сам контейнер tailscale.
+    content: |
+      {
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          }
+        },
+        "Web": {
+          "$${TS_CERT_DOMAIN}:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://seafile:80"
+              }
+            }
+          }
+        }
+      }
+
 networks:
   seafile-net:
 
 volumes:
   db-data:
   seafile-data:
+  tailscale-config:
