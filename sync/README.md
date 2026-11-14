@@ -51,13 +51,33 @@ docker compose restart seafile
 
 Проверить: в веб-интерфейсе *System Admin* у пользователя должна стоять квота 10 ГБ. Если значение не применилось, открой `seafile.conf` внутри контейнера и проверь секцию `[quota]`. Квота действует на каждого пользователя отдельно, а не на весь сервер.
 
-### 403 «CSRF verification failed» при входе
+### Адреса Seahub: вход (403 CSRF) и загрузка файлов
 
-Страница входа открывается, а отправка формы даёт 403. Seahub (Django) видит запрос как обычный http за прокси Tailscale, и Origin `https://<адрес>` не совпадает с его ожиданиями. Compose сам добавляет `CSRF_TRUSTED_ORIGINS = ["https://<SEAFILE_SERVER_HOSTNAME>"]` в `seahub_settings.py` при старте контейнера `seafile`, ручных действий не нужно.
+Образ `seafile-mc` 11 записывает `SERVICE_URL` и `FILE_SERVER_ROOT` в `seahub_settings.py` один раз, при инициализации пустого тома, и потом их не обновляет. Если `SEAFILE_SERVER_HOSTNAME` поменялся после первого запуска, браузер и клиенты получают ссылки для загрузки на старый адрес. Вход при этом работает, а файлы не загружаются. `CSRF_TRUSTED_ORIGINS` образ не пишет вовсе, и без него вход даёт 403: TLS снимает Tailscale, поэтому Seahub видит запрос как http, а браузер присылает Origin `https://…`.
 
-Строка добавляется, если её ещё нет в файле. При первом запуске файл появляется во время инициализации, и скрипт дожидается его в фоне. Если после первого запуска 403 остаётся, выполни один раз `docker compose restart seafile`.
+Поэтому контейнер `seafile` стартует через скрипт `seafile-start`. Он встроен в [docker-compose.yml](docker-compose.yml) в раздел `configs`, а не лежит отдельным файлом: Portainer при развёртывании стека из git не находит файлы по относительным путям. Скрипт при каждом старте пересоздаёт в конце `seahub_settings.py` блок между `# BEGIN seafile-start` и `# END seafile-start`:
 
-Если ошибка всё равно остаётся, в `docker compose logs seafile` будет строка с причиной, например `Origin checking failed` или `Referer checking failed`. Она покажет, какой заголовок не совпал.
+```python
+SERVICE_URL = "https://<SEAFILE_SERVER_HOSTNAME>"
+FILE_SERVER_ROOT = "https://<SEAFILE_SERVER_HOSTNAME>/seafhttp"
+CSRF_TRUSTED_ORIGINS = ["https://<SEAFILE_SERVER_HOSTNAME>"]
+```
+
+Он перекрывает значения выше по файлу. Чтобы сменить адрес, поправь `SEAFILE_SERVER_HOSTNAME` (в `.env` или в переменных стека Portainer) и пересоздай контейнер: `docker compose up -d` или *Update the stack* в Portainer. Блок руками не правь, при следующем старте он перезапишется.
+
+На пустом томе файла ещё нет, и в первый запуск блок не добавляется: `SERVICE_URL` и `FILE_SERVER_ROOT` образ запишет сам, но вход будет давать 403. После первой инициализации перезапусти контейнер `seafile` один раз (`docker compose restart seafile` или *Restart* в Portainer).
+
+Проверить, что действует внутри контейнера (в Portainer: контейнер `seafile` → *Console*, команда без `docker compose exec seafile`):
+
+```bash
+docker compose exec seafile grep -nE 'SERVICE_URL|FILE_SERVER_ROOT|CSRF_TRUSTED_ORIGINS' /shared/seafile/conf/seahub_settings.py
+```
+
+В логе контейнера при старте должна быть строка `seafile-start: адреса Seahub выставлены на https://…`.
+
+Если файл в порядке, а загрузка всё равно идёт на старый адрес, проверь *System Admin → Settings*. Значения `SERVICE_URL` и `FILE_SERVER_ROOT`, сохранённые там через веб-интерфейс, хранятся в базе и важнее файла. Исправь их там или очисти.
+
+Если вход всё равно даёт 403, в `docker compose logs seafile` будет строка с причиной, например `Origin checking failed` или `Referer checking failed`. Она покажет, какой заголовок не совпал.
 
 ## Бекап
 

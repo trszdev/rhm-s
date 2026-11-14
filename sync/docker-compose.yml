@@ -79,23 +79,13 @@ services:
       - SEAFILE_SERVER_LETSENCRYPT=false
       # Снаружи пользователь заходит по https, Tailscale терминирует TLS
       - FORCE_HTTPS_IN_CONF=true
-    # Seahub (Django) не доверяет адресу из tailnet, и вход даёт 403 CSRF.
-    # Образ эту строку сам не пишет, поэтому добавляем её в seahub_settings.py перед стартом.
-    # Команда повторяет штатный CMD образа: /sbin/my_init -- /scripts/enterpoint.sh
-    # $$ — экранирование для compose, shell раскрывает переменные уже внутри контейнера.
-    command:
-      - /bin/sh
-      - -c
-      - |
-        add_csrf() {
-          f=/shared/seafile/conf/seahub_settings.py
-          [ -f "$$f" ] || return 1
-          grep -q CSRF_TRUSTED_ORIGINS "$$f" && return 0
-          printf '\nCSRF_TRUSTED_ORIGINS = ["https://%s"]\n' "$$SEAFILE_SERVER_HOSTNAME" >> "$$f"
-        }
-        # При первом запуске файл создаётся во время инициализации, поэтому ждём его в фоне
-        ( while ! add_csrf; do sleep 2; done ) &
-        exec /sbin/my_init -- /scripts/enterpoint.sh
+    # Образ пишет SERVICE_URL и FILE_SERVER_ROOT только при первой инициализации тома,
+    # а CSRF_TRUSTED_ORIGINS не пишет вовсе. Скрипт seafile-start (ниже, в configs) при каждом
+    # старте выставляет все три из SEAFILE_SERVER_HOSTNAME и запускает штатный CMD образа.
+    command: ["/bin/sh", "/opt/compose/start.sh"]
+    configs:
+      - source: seafile-start
+        target: /opt/compose/start.sh
     volumes:
       - seafile-data:/shared
     networks:
@@ -135,6 +125,53 @@ services:
       - seafile-net
 
 configs:
+  seafile-start:
+    # Скрипт встроен в compose, а не лежит отдельным файлом: Portainer при развёртывании
+    # из git не находит файлы по относительным путям на хосте.
+    # $$ — экранирование для compose, переменные раскрывает shell внутри контейнера.
+    content: |
+      #!/bin/sh
+      # Образ seafile-mc 11 записывает SERVICE_URL и FILE_SERVER_ROOT в seahub_settings.py
+      # один раз, при инициализации пустого тома, и дальше их не трогает. Если адрес потом
+      # поменялся (был http://localhost:8080, стал https://<имя>.<tailnet>.ts.net), Seahub
+      # продолжает выдавать ссылки для загрузки на старый адрес, и файлы не загружаются.
+      # CSRF_TRUSTED_ORIGINS образ не пишет вовсе, и без него Django 4 отвечает 403 на вход:
+      # TLS снимает Tailscale, Seahub видит запрос как http, а Origin у браузера https.
+      #
+      # При каждом старте скрипт пересоздаёт свой блок в конце файла. Python выполняет файл
+      # сверху вниз, поэтому значения из блока перекрывают записанные образом выше.
+      set -eu
+
+      CONF=/shared/seafile/conf/seahub_settings.py
+      BEGIN='# BEGIN seafile-start (docker-compose.yml)'
+      END='# END seafile-start'
+
+      url="https://$${SEAFILE_SERVER_HOSTNAME:?SEAFILE_SERVER_HOSTNAME не задан}"
+
+      if [ -f "$$CONF" ]; then
+          tmp="$$CONF.tmp"
+          # Убираем свой прошлый блок и отдельную строку CSRF_TRUSTED_ORIGINS,
+          # которую дописывала прежняя версия этого файла
+          sed -e "\|^$$BEGIN|,\|^$$END|d" -e '/^CSRF_TRUSTED_ORIGINS *=/d' "$$CONF" > "$$tmp"
+          cat >> "$$tmp" <<EOF
+      $$BEGIN, пересоздаётся при каждом старте, правки вручную пропадут
+      SERVICE_URL = "$$url"
+      FILE_SERVER_ROOT = "$$url/seafhttp"
+      CSRF_TRUSTED_ORIGINS = ["$$url"]
+      $$END
+      EOF
+          # Пишем через cat, а не mv, чтобы у файла сохранились владелец и права
+          cat "$$tmp" > "$$CONF"
+          rm -f "$$tmp"
+          echo "seafile-start: адреса Seahub выставлены на $$url"
+      else
+          echo "seafile-start: $$CONF ещё нет, идёт первая инициализация."
+          echo "seafile-start: когда она закончится, перезапусти контейнер seafile один раз"
+      fi
+
+      # Штатный CMD образа
+      exec /sbin/my_init -- /scripts/enterpoint.sh
+
   ts-serve:
     # $$ — экранирование для compose. ${TS_CERT_DOMAIN} подставляет сам контейнер tailscale.
     content: |
