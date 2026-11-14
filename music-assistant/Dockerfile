@@ -3,6 +3,7 @@
 FROM ghcr.io/paulg67/music-play@sha256:7344a0fcce5e3b0c4f91a43c586dd0894e541680d986e3d221e44d642ea0f01d
 
 COPY patch_music_play.py /tmp/patch_music_play.py
+COPY playlist_sync.py /app/app/services/playlist_sync.py
 RUN python /tmp/patch_music_play.py && rm /tmp/patch_music_play.py
 
 # Готовый образ не обновляется сам, а YouTube регулярно ломает извлечение потоков.

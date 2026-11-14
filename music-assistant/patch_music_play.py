@@ -180,3 +180,21 @@ replace_once(
     "_prefetch_lock = asyncio.Lock()\n",
     "_prefetch_lock = asyncio.Lock()\n_track_locks: dict[str, asyncio.Lock] = {}\n",
 )
+
+# 6. Плейлист YouTube Music зеркалируется в локальный плейлист каждые 15 минут, а кеш
+#    очищается при каждом запуске. Модуль добавляется в образ рядом с этим патчем.
+replace_once(
+    "app/main.py",
+    "from app.subsonic import media\n",
+    "from app.services import playlist_sync\nfrom app.subsonic import media\n",
+)
+replace_once(
+    "app/main.py",
+    "    init_db()\n    ensure_icons()\n",
+    "    init_db()\n    playlist_sync.clear_cache_on_start()\n    ensure_icons()\n",
+)
+replace_once(
+    "app/main.py",
+    "    navidrome.warm_index()\n    yield\n    await media.aclose()\n",
+    "    navidrome.warm_index()\n    playlist_sync.start()\n    try:\n        yield\n    finally:\n        await playlist_sync.stop()\n        await media.aclose()\n",
+)

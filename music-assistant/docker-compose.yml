@@ -15,8 +15,13 @@
 # Куки задаются переменной YTM_COOKIES в настройках стека, в git их не добавлять.
 # При каждом запуске они записываются в том music-play-config. Формат: см. .env.example.
 #
+# Плейлисты из PLAYLIST_SYNC_URLS зеркалируются в локальные каждые
+# PLAYLIST_SYNC_INTERVAL_MINUTES минут (по умолчанию 15). Amperfy видит такой
+# плейлист как обычный Subsonic-плейлист, а его состав обновляется автоматически.
+#
 # Кеш: аудио лежит только в tmpfs (память) и занимает не больше 256 МБ, старые треки
-# вытесняются новыми, при перезапуске контейнера кеш очищается целиком.
+# вытесняются новыми. При каждом запуске контейнера кеш очищается принудительно,
+# включая обложки и служебные файлы yt-dlp.
 #
 # В админке Tailscale должны быть включены MagicDNS и HTTPS Certificates.
 #
@@ -69,6 +74,10 @@ services:
       - YTM_COOKIES=${YTM_COOKIES:-}
       - YTM_AUTH_FILE=/config/ytmusic_auth.json
       - YTDLP_COOKIE_FILE=/config/cookies.txt
+      # Плейлист(ы) YouTube Music: ссылка или id через запятую. Состав переносится
+      # в локальный плейлист, поэтому он виден в Amperfy как обычный плейлист.
+      - PLAYLIST_SYNC_URLS=${PLAYLIST_SYNC_URLS:-PL6e13HsDiALUDogpZ3qcgRd1v7ZUcB4Da}
+      - PLAYLIST_SYNC_INTERVAL_MINUTES=${PLAYLIST_SYNC_INTERVAL_MINUTES:-15}
       - STREAM_MODE=proxy
       - CACHE_ENABLED=true
       - CACHE_MAX_GB=0.25
