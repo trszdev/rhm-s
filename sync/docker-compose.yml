@@ -1,0 +1,100 @@
+# Seafile для локального запуска с периодическим бекапом на Яндекс.Диск.
+#
+# Схема:
+#   - seafile   — Seafile Server (образ seafileltd/seafile-mc). Веб-интерфейс только на
+#                 127.0.0.1:8080, наружу не публикуется;
+#   - db        — MariaDB для баз ccnet_db, seafile_db, seahub_db. Порт наружу не публикуется;
+#   - memcached — кеш для Seafile;
+#   - backup    — раз в BACKUP_INTERVAL_HOURS снимает дамп баз и синхронизирует файлы
+#                 Seafile на Яндекс.Диск по WebDAV (rclone). Монтирует тома Seafile
+#                 только для чтения.
+#
+# Данные лежат в именованных томах seafile-data и db-data, а не в папках проекта.
+#
+# Запуск: cp .env.example .env, заполнить .env, затем docker compose up -d --build
+# Подробности и настройка квоты: см. README.md
+
+name: seafile
+
+services:
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD:?Задай DB_ROOT_PASSWORD в .env}
+      - MYSQL_LOG_CONSOLE=true
+      - MARIADB_AUTO_UPGRADE=1
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - seafile-net
+
+  memcached:
+    image: memcached:1.6-alpine
+    restart: unless-stopped
+    command: ["-m", "256"]
+    networks:
+      - seafile-net
+
+  seafile:
+    image: seafileltd/seafile-mc:11.0-latest
+    restart: unless-stopped
+    depends_on:
+      - db
+      - memcached
+    environment:
+      - DB_HOST=db
+      - DB_ROOT_PASSWD=${DB_ROOT_PASSWORD:?Задай DB_ROOT_PASSWORD в .env}
+      - MEMCACHED_HOST=memcached
+      - TIME_ZONE=${TZ:-Etc/UTC}
+      - SEAFILE_ADMIN_EMAIL=${SEAFILE_ADMIN_EMAIL:?Задай SEAFILE_ADMIN_EMAIL в .env}
+      - SEAFILE_ADMIN_PASSWORD=${SEAFILE_ADMIN_PASSWORD:?Задай SEAFILE_ADMIN_PASSWORD в .env}
+      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_SERVER_HOSTNAME:-localhost:8080}
+      - SEAFILE_SERVER_LETSENCRYPT=false
+      - FORCE_HTTPS_IN_CONF=false
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - seafile-data:/shared
+    networks:
+      - seafile-net
+
+  backup:
+    build: ./backup
+    # Образа нет в реестрах, поэтому pull пропускается, а образ собирается из ./backup
+    pull_policy: build
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD:?Задай DB_ROOT_PASSWORD в .env}
+      - YANDEX_USER=${YANDEX_USER:?Задай YANDEX_USER в .env}
+      - YANDEX_APP_PASSWORD=${YANDEX_APP_PASSWORD:?Задай YANDEX_APP_PASSWORD в .env}
+      - BACKUP_REMOTE_DIR=${BACKUP_REMOTE_DIR:-seafile-backup}
+      - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS:-24}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-14}
+      - BACKUP_DATA=${BACKUP_DATA:-true}
+      - TZ=${TZ:-Etc/UTC}
+    volumes:
+      # Только чтение: бекап не должен менять данные Seafile
+      - seafile-data:/source:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Файлы Seafile принадлежат другому пользователю, без этого права root их не прочитает
+      - DAC_READ_SEARCH
+    networks:
+      - seafile-net
+
+networks:
+  seafile-net:
+
+volumes:
+  db-data:
+  seafile-data:
