@@ -79,6 +79,23 @@ services:
       - SEAFILE_SERVER_LETSENCRYPT=false
       # Снаружи пользователь заходит по https, Tailscale терминирует TLS
       - FORCE_HTTPS_IN_CONF=true
+    # Seahub (Django) не доверяет адресу из tailnet, и вход даёт 403 CSRF.
+    # Образ эту строку сам не пишет, поэтому добавляем её в seahub_settings.py перед стартом.
+    # Команда повторяет штатный CMD образа: /sbin/my_init -- /scripts/enterpoint.sh
+    # $$ — экранирование для compose, shell раскрывает переменные уже внутри контейнера.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        add_csrf() {
+          f=/shared/seafile/conf/seahub_settings.py
+          [ -f "$$f" ] || return 1
+          grep -q CSRF_TRUSTED_ORIGINS "$$f" && return 0
+          printf '\nCSRF_TRUSTED_ORIGINS = ["https://%s"]\n' "$$SEAFILE_SERVER_HOSTNAME" >> "$$f"
+        }
+        # При первом запуске файл создаётся во время инициализации, поэтому ждём его в фоне
+        ( while ! add_csrf; do sleep 2; done ) &
+        exec /sbin/my_init -- /scripts/enterpoint.sh
     volumes:
       - seafile-data:/shared
     networks:
